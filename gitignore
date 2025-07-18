@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Python bytecode caches and virtual environments (within /agent)
+/agent/**/__pycache__/
+/agent/**/*.py[cod]
+/agent/**/env/
+/agent/**/venv/
+/agent/**/.venv/
+/agent/**/orchid_env/
