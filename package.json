@@ -50,6 +50,7 @@
     "cmdk": "^1.1.1",
     "cobe": "^0.6.4",
     "date-fns": "^4.1.0",
+    "dotenv": "^17.2.0",
     "dotted-map": "^2.2.3",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
@@ -77,6 +78,7 @@
     "tailwindcss-animate": "^1.0.7",
     "three": "^0.178.0",
     "three-globe": "^2.43.0",
+    "tsx": "^4.20.3",
     "vaul": "^1.1.2",
     "zod": "^3.25.74"
   },
