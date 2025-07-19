@@ -2,7 +2,7 @@ import uuid
 import google.generativeai as genai
 from rich.console import Console
 from qdrant_client import QdrantClient, models
-
+from rich.progress import track
 from src import config
 
 class VectorStore:
@@ -37,17 +37,16 @@ class VectorStore:
                 vectors_config=models.VectorParams(size=len(embeddings[0]), distance=models.Distance.COSINE)
             )
 
-            # Prepare points with vectors and payloads for upsert
-            points = [
-                models.PointStruct(
-                    id=str(uuid.uuid4()),
-                    vector=embedding,
-                    payload=chunk
+            points = []
+            for embedding, chunk in track(zip(embeddings, chunks), description="[green]Preparing points for database...[/green]", total=len(chunks)):
+                points.append(
+                    models.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=embedding,
+                        payload=chunk
+                    )
                 )
-                for embedding, chunk in zip(embeddings, chunks)
-            ]
 
-            # Upsert all points into the collection
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=points,
@@ -64,12 +63,12 @@ class VectorStore:
         try:
             query_embedding = genai.embed_content(model=config.EMBEDDING_MODEL, content=query, task_type="RETRIEVAL_QUERY")['embedding']
             
+            self.console.print("[bold yellow]Searching for relevant code chunks...[/bold yellow]")
             search_result = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_embedding,
                 limit=k
             )
-            # The payload is the original code chunk we stored
             return [hit.payload for hit in search_result]
         except Exception as e:
             self.console.print(f"[bold red]Error searching Qdrant collection: {e}[/bold red]")
