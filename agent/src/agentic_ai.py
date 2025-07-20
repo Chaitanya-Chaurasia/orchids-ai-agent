@@ -47,12 +47,20 @@ class Agent:
             self.console.print(Panel("[bold yellow]Codebase has changed.[/bold yellow] Re-initializing is recommended. Run `python agent/orchid.py init`.", title="Stale Cache Warning"))
 
     def think(self, message):
-        self.console.print(Panel(f"[bold cyan]🤖 Agent thinking...[/bold cyan]\n[italic]{message}[/italic]"))
-        time.sleep(1)
+        with self.console.status(
+            f"[bold cyan]🌸 OrchidAI is thinking...[/bold cyan]  [italic]{message}[/italic]",
+            spinner="dots",          
+            spinner_style="magenta", 
+        ):
+            time.sleep(1)  
 
     def act(self, message):
-        self.console.print(Panel(f"[bold green]🚀 Agent in action...[/bold green]\n{message}"))
-        time.sleep(1)
+        with self.console.status(
+            f"[bold green]🌸 OrchidAI is in action...[/bold green]  [italic]{message}[/italic]",
+            spinner="earth",        
+            spinner_style="green",
+        ):
+            time.sleep(1)
 
     def show_code(self, code, language="typescript"):
         self.console.print(Syntax(code, language, theme="monokai", line_numbers=True, word_wrap=True))
@@ -100,10 +108,13 @@ class Agent:
         self.think("Classifying user intent...")
         prompt = f"""
         You are a classifier for a command-line code agent.  
-        Return **exactly one** of the two labels below—nothing else, no punctuation:
+        Return exactly TWO lines:
 
-        build_request
-        question
+        1. The single word 'build_request' or 'question'.
+        2. A one-sentence explanation (≤120 chars) describing *why* you chose that label.
+
+        Do not add anything else—no punctuation before or after the word,
+        no Markdown fences, no blank lines.
 
         **Definitions**
 
@@ -128,42 +139,125 @@ class Agent:
         """
 
         try:
-            model = genai.GenerativeModel('gemini-2.5-pro')
+            model = genai.GenerativeModel("gemini-2.5-pro")
             response = model.generate_content(prompt)
-            intent = response.text.strip().lower()
-            if intent in ["build_request", "question"]:
-                self.console.print(f"[dim]Intent classified as: {intent}[/dim]")
-                return intent
-            return "build_request" # Default to build if classification is unclear
+            lines = [l.strip() for l in response.text.strip().splitlines() if l.strip()]
+
+            label = lines[0].lower() if lines else "build_request"
+            reason = lines[1] if len(lines) > 1 else "No reason returned."
+
+            if label not in {"build_request", "question"}:
+                label, reason = "build_request", "Model returned unexpected label."
+
+            self.last_intent_reason = reason
+            self.console.print(f"[dim]Intent classified as: {label} – {reason}[/dim]")
+
+            return label
+
         except Exception as e:
-            self.console.print(f"[bold red]Could not classify intent: {e}. Defaulting to build request.[/bold red]")
-            return "build_request"
+            self.console.print(
+                f"[bold red]Could not classify intent: {e}. "
+                "Defaulting to build_request.[/bold red]"
+            )
+            self.last_intent_reason = "Defaulted due to error."
+        return "build_request"
     
     def _classify_database_intent(self, task: str) -> str:
-        """Uses Gemini to classify the user's desired database from the initial prompt."""
+    
         self.think("Analyzing prompt for specific database request...")
+
         prompt = f"""
-        Analyze the user's request and identify which database they want to use.
-        The possible databases are "SQLite", "MongoDB", or "Supabase".
+        You are an ultra-precise **single-word classifier**.
 
-        If the user mentions a database that is not one of these three (e.g., "Postgres", "MySQL"), or if it's ambiguous, respond with "Unsupported".
-        If the user clearly mentions one of the three, even with typos (e.g., "sqllite", "mongo db", "supa base"), respond with the corrected, single-word name: "SQLite", "MongoDB", or "Supabase".
-        If no database is mentioned, respond with "Unknown".
+        ────────────────────────────────────────────────────────
+        ## Goal
+        Look at the **user's request** and output **one word** that best represents the database they intend to use:
 
-        Respond with only a single word.
+        - `SQLite`
+        - `MongoDB`
+        - `Supabase`   ← interpret as “Postgres-compatible cloud DB”
+        - `Unknown`    ← no clear hint
+        - `Unsupported`← mentions another DB (MySQL, Redis, etc.) or it's ambiguous and not one of the three above
 
-        User Request: "{task}"
+        Return nothing else—**no punctuation, no code-blocks**.
+
+        ────────────────────────────────────────────────────────
+        ## 1. Exact-match keywords → label immediately
+        | Keyword variants → Return |
+        |---------------------------|
+        | sqlite, sqllite, "better-sqlite3", "better sqlite", ".db file", "file-based sql", "local sql db" | **SQLite** |
+        | mongo, mongodb, "mongo db", "mongoose", "mongodb+srv://" | **MongoDB** |
+        | supabase, postgres, postgresql, pg, neondb, neon database, "postgres://", "pg connection", "drizzle-orm with pg driver", "drizzle-orm/postgres" | **Supabase** |
+        | mysql, planetscale, redis, dynamodb, firestore, cassandra, oracle, mssql, duckdb, sqlserver, timescale, prisma (without pg), "any sql" | **Unsupported** |
+
+        > **Rule of thumb:** If the keyword clearly maps, choose it—even with typos ("supa base", "sqllte", "mongo-atlas").
+
+        ────────────────────────────────────────────────────────
+        ## 2. Implicit cues (only if no exact keyword)
+        ### Treat as **Supabase** when:
+        - Mentions **Drizzle** *and* any Postgres hint (`pg` driver, etc.).
+        - Mentions **Neon**, Railway Postgres, or “serverless Postgres”.
+        - Mentions env vars like `SUPABASE_URL`, `DATABASE_URL=postgres://`.
+
+        ### Treat as **SQLite** when:
+        - Mentions “embedded DB”, “single .db file”, “no setup database”.
+
+        ### Treat as **MongoDB** when:
+        - Mentions Atlas, Prisma mongodb provider, “NoSQL document store”.
+
+        ────────────────────────────────────────────────────────
+        ## 3. Otherwise
+        - Generic “implement a database” with no clues → **Unknown**.
+        - Conflicting or multiple different DBs → **Unsupported**.
+
+        ────────────────────────────────────────────────────────
+        ## 4. Examples
+
+        | Request                                                                                               | Return |
+        |--------------------------------------------------------------------------------------------------------|--------|
+        | “Set up drizzle-orm with pg in my Next.js app”                                                         | Supabase |
+        | “Please add a mongodb model for users”                                                                 | MongoDB |
+        | “Use neon serverless database”                                                                         | Supabase |
+        | “Store data locally in a .db file so users don't need a server”                                        | SQLite |
+        | “Switch from PlanetScale to Drizzle”                                                                   | Unsupported |
+        | “Implement database features for @src/components/spotify-main-content.tsx”                             | Unknown |
+        | “I want persistence, maybe mysql?”                                                                     | Unsupported |
+
+        ────────────────────────────────────────────────────────
+        ## 5.Output FORMAT (STRICT)
+
+        Return **exactly two lines**:
+
+        1. The single word: `SQLite`, `MongoDB`, `Supabase`, `Unknown`, or `Unsupported`.
+        2. One sentence (≤120 chars) explaining why you chose that label.
+
+        No blank lines, no extra commentary.
+
+        User request:
+        {task}
         """
+
         try:
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel("gemini-2.5-flash")
             response = model.generate_content(prompt)
-            db_intent = response.text.strip()
-            if db_intent in ["SQLite", "MongoDB", "Supabase", "Unknown", "Unsupported"]:
-                self.console.print(f"[dim]Database intent classified as: {db_intent}[/dim]")
-                return db_intent
-            return "Unknown"
+            lines = [l.strip() for l in response.text.strip().splitlines() if l.strip()]
+
+            label = lines[0] if lines else "Unknown"
+            reason = lines[1] if len(lines) > 1 else "No reason returned."
+
+            if label not in {"SQLite", "MongoDB", "Supabase", "Unknown", "Unsupported"}:
+                label, reason = "Unknown", "Model returned unexpected label."
+
+            self.last_db_reason = reason
+            self.console.print(f"[dim]Database intent classified as: {label} – {reason}[/dim]")
+
+            return label
+
         except Exception as e:
-            self.console.print(f"[bold red]Could not classify database intent: {e}. Defaulting to Unknown.[/bold red]")
+            self.console.print(
+                f"[bold red]Could not classify database intent: {e}. Defaulting to Unknown.[/bold red]"
+            )
+            self.last_db_reason = "Defaulted due to error."
             return "Unknown"
 
     def _execute_answer_task(self, query: str, user_files: List[str]):
@@ -273,38 +367,88 @@ class Agent:
                 except Exception as e:
                     self.console.print(f"[red]Error reading file {file_path}: {e}[/red]")
         
+                # ===== NEW SUPER‑DETAILED PROMPT =====
         prompt = f"""
-        You are an expert Next.js and Drizzle ORM developer. Your task is to implement a new database feature.
-        **User Request:** "{task}"
-        **User-Provided File Context (High Priority):**
+        You are **Orchid**, an elite Next.js + TypeScript + Drizzle-ORM engineer.  
+        Your job is to transform the user's request into a precise, AUTOMATED **build plan** for our CLI agent.
+
+        ────────────────────────────────────────────────────────
+        ## 1   Input Context (what you know)
+
+        **User Request (verbatim):**  
+        \"{task}\"
+
+        **User-Provided File Context (High Priority):**  
         {user_file_context or "None"}
-        **Project Context:**
-        - **Database Type:** {db_type}
-        - **Relevant Code Snippets:**
+
+        **Project Context (Medium Priority):**  
+        • Database Type 👉 {db_type}  
+        • Relevant existing code snippets (searched automatically):  
         {context}
-        **Your Goal:**
-        Generate a step-by-step plan. The plan should consist of `CREATE_FILE` or `UPDATE_FILE` actions. You must also identify any new npm packages that need to be installed.
-        **Output Format:**
-        Respond with ONLY a valid JSON object.
+
+        _Assume everything not shown to you already exists and compiles._
+
+        ────────────────────────────────────────────────────────
+        ## 2   Your Mission
+
+        1. **Analyse** the request:  
+        • Does it call for *one* table, multiple tables, or new columns in an existing one?  
+        • Does the user need seed/fixture data?  
+        • Do we need an **API route** (RESTful or Next.js Route Handler) to fetch/update data?  
+        • BONUS (if the request hints at it): Wire the new API into existing React / client code so the UI really works.
+
+        2. **Generate a build plan** consisting of a list of *atomic* actions:  
+        - **CREATE_FILE** - for brand-new files (schema, route, seed, utils, etc.)  
+        - **UPDATE_FILE** - always include the **full, updated file** (not a diff) when editing.
+
+        3. **Cover edge cases & completeness**  
+        - Migrations: include `drizzle.config.ts` or migration files if not present.  
+        - Environment variables: if a new `DATABASE_URL`, `SUPABASE_URL`, etc. is needed, create or update `.env.example`.  
+        - Type‑safety: export proper types (`typeof myTable.$inferSelect`).  
+        - Error handling: return 500 JSON on DB failure.  
+        - API route headers: set `dynamic = "force-dynamic"` for fresh data if needed.  
+        - Pagination / ordering if lists could grow large.  
+        - Empty state in the React component (`"No data yet"`).  
+        - **NEVER** leave TODOs—produce compile‑ready code.
+
+        4. **Dependencies**  
+        - List every npm package not already standard in Drizzle/Next.js (e.g. `@planetscale/database`).  
+        - Omit duplicates.
+
+        ────────────────────────────────────────────────────────
+        ## 3   Common Request Patterns & How to Handle
+
+        | Pattern (examples) | What You Should Produce |
+        |--------------------|-------------------------|
+        | “Store *X* in a table” | • New `X` table in `schema.ts`<br>• Seed file inserting sample rows (optional but nice)<br>• `src/app/api/x/route.ts` with GET/POST handlers<br>• Update frontend component to fetch from `/api/x` |
+        | “Create tables for A and B” | Same as above **for each** table, or a single table with enum `category` if truly appropriate (explain choice in `thought`) |
+        | “BONUS: integrate route into existing code” | Modify the specified React/TSX file(s) to call `fetch('/api/...')`, handle loading, and render data. Remove hard‑coded arrays. |
+        | “Refactor existing table to add column Y” | Drizzle `ALTER TABLE` migration file + updated `schema.ts` + any necessary UI/api changes. |
+        | Database unspecified | Respect **{db_type}**. If `Unknown`, default to Postgres‑style (Supabase) unless the codebase clearly shows SQLite or Mongo pattern. |
+
+        ────────────────────────────────────────────────────────
+        ## 4   Output Format (STRICT)
+
+        Return **ONLY** a valid JSON object **exactly** like:  
+
         ```json
         {{
-        "dependencies": ["package-name-if-needed"],
+        "dependencies": ["package-1", "package-2"],
         "plan": [
             {{
             "action": "CREATE_FILE",
             "path": "path/to/new/file.ts",
-            "thought": "A brief explanation of why you are creating this file.",
-            "code": "FULL_CODE_FOR_THE_FILE"
+            "thought": "One‑sentence rationale.",
+            "code": "FULL COMPILE‑READY FILE CONTENT HERE"
             }},
             {{
             "action": "UPDATE_FILE",
             "path": "path/to/existing/file.tsx",
-            "thought": "A brief explanation of why you are updating this file.",
-            "code": "THE_ENTIRE_UPDATED_FILE_CONTENT"
+            "thought": "Why we must update it.",
+            "code": "ENTIRE UPDATED SOURCE FILE CONTENT"
             }}
         ]
         }}
-        ```
         """
         headers = {"Content-Type": "application/json"}
         data = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -362,18 +506,52 @@ class Agent:
 
 
         prompt = f"""
-        You are an expert Next.js and Drizzle ORM developer. Your task is to implement a new database feature.
-        **User Request:** "{query}"
+        You are **Orchid**, an expert Next.js / Drizzle-ORM developer and database specialist. 
+        ────────────────────────────────────────────────────────
+        ## 1   Determine the user's INTENT
 
-        **User-Provided File Context (High Priority):**
+        - **Implementation request** the user clearly asks to create, modify, delete, refactor, or set up code or database functionality, or wants step-by-step build instructions.<br>
+        *Key verbs / phrases:* add, build, implement, generate, integrate, migrate, refactor, “how do I …”, “set up …”, “please create …”.
+
+        - **Information request** the user only wants an explanation, summary, clarification, comparison, list, or advice, **without** asking for new code or database changes.<br>
+        *Key verbs / phrases:* what, why, explain, describe, summarize, list, compare, “do I need to …”, “should I …”.
+
+        **Edge-case rules**
+
+        1. Mixed intent → treat as *implementation* (action overrides inquiry).  
+        2. Advice questions (“Should I delete X?”) → *information*.  
+        3. Hypothetical “How would I integrate Y?” → *implementation*.  
+        4. Brief / ambiguous queries default to *information*.  
+        5. Gratitude / small‑talk → polite short reply (*information*).  
+        6. When unsure, favour *information*.
+
+        ────────────────────────────────────────────────────────
+        ## 2   Respond according to INTENT
+
+        ### A) Implementation request  
+        *Return **only** the JSON plan* described in **Output Format for Implementation** below.
+
+        ### B) Information request  
+        1. Give a clear, technically‑accurate Markdown answer using any **User‑Provided File Context** and **Relevant Code Snippets**.  
+        2. **DO NOT** output a JSON plan.  
+        3. End with exactly this line (verbatim, one sentence, italics):  
+
+        > *Because I'm a database agent I focus on implementing data features—if you'd like me to turn this explanation into working code, just ask!*
+
+        ────────────────────────────────────────────────────────
+        ## 3- Context Available to You
+        **User-Request:** \"{query}\"
+
+        **User-Provided-File-Context (High Priority):**
         {user_file_context or "None"}
 
-        **Relevant Code Snippets (from automatic search):**
+        **Relevant-Code-Snippets (from automatic search):**
         {context}
-        **Your Goal:**
-        Generate a step-by-step plan. The plan should consist of `CREATE_FILE` or `UPDATE_FILE` actions. You must also identify any new npm packages that need to be installed.
-        **Output Format:**
-        Respond with ONLY a valid JSON object.
+
+        ────────────────────────────────────────────────────────
+        ## Output Format for Implementation
+        Respond with **ONLY** a valid JSON object:
+
         ```json
         {{
         "dependencies": ["package-name-if-needed"],
@@ -381,14 +559,14 @@ class Agent:
             {{
             "action": "CREATE_FILE",
             "path": "path/to/new/file.ts",
-            "thought": "A brief explanation of why you are creating this file.",
+            "thought": "Short explanation of why this file is needed.",
             "code": "FULL_CODE_FOR_THE_FILE"
             }},
             {{
             "action": "UPDATE_FILE",
             "path": "path/to/existing/file.tsx",
-            "thought": "A brief explanation of why you are updating this file.",
-            "code": "THE_ENTIRE_UPDATED_FILE_CONTENT"
+            "thought": "Short explanation of the update.",
+            "code": "ENTIRE_UPDATED_FILE_CONTENT"
             }}
         ]
         }}
@@ -403,7 +581,6 @@ class Agent:
                 config.GEMINI_API_URL, headers=headers, json=data, timeout=180
             )
             response.raise_for_status()
-            # thought = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             answer = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             md_renderable = Markdown(answer, justify="left", code_theme="monokai")

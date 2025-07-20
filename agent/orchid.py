@@ -7,12 +7,43 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from rich.console import Console
 from rich.panel import Panel
-from pyfiglet import Figlet
+from rich.text import Text
+
 from src.agentic_ai import Agent
 from src import config
+
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit import PromptSession
-from rich.text import Text
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
+
+class AtPathCompleter(Completer):
+    """
+    Offer path completions ONLY when the current word begins with “@”.
+    """
+    def __init__(self, words: list[str]):
+        self.words = words
+
+    def get_completions(self, document, complete_event):
+        word = document.get_word_before_cursor(WORD=True)
+        if not word.startswith("@"):
+            return  
+        for w in self.words:
+            if w.startswith(word):
+                yield Completion(w, start_position=-len(word))
+
+kb = KeyBindings()
+
+@kb.add("enter")
+def _(event) -> None:  
+    buf = event.app.current_buffer
+    if buf.complete_state:                          
+        comp = buf.complete_state.current_completion
+        if comp:
+            buf.apply_completion(comp)              
+        buf.complete_state = None                   
+    else:
+        event.app.exit(result=buf.text)             
 
 
 app = typer.Typer(
@@ -36,9 +67,18 @@ def get_file_paths(root_dir):
 def _print_welcome_banner():
     """Display a fancy multi-line welcome banner."""
     console.print(Panel("[bold]Welcome to the [bright_magenta]Orchid AI Agent[/bright_magenta]![/bold]", border_style="magenta"))
-    banner_text = Figlet(font="banner3").renderText("ORCHID AI")
+    banner_text = """
+    ██████╗ ██████╗  ██████╗██╗  ██╗██╗██████╗  █████╗ ██╗
+    ██╔═══██╗██╔══██╗██╔════╝██║  ██║██║██╔══██╗██╔══██╗██║
+    ██║   ██║██████╔╝██║     ███████║██║██║  ██║███████║██║
+    ██║   ██║██╔══██╗██║     ██╔══██║██║██║  ██║██╔══██║██║
+    ╚██████╔╝██║  ██║╚██████╗██║  ██║██║██████╔╝██║  ██║██║
+    ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝
+    """
     console.print(f"[bold deep_pink3]{banner_text}[/bold deep_pink3]", overflow="ignore")
     console.print("[bold green]🎉 Ready to assist you.[/bold green]\n")
+
+
 
 @app.callback()
 def main(ctx: typer.Context):
@@ -77,37 +117,37 @@ def init():
 
 
 @app.command()
-def run():
-    """
-    Starts an interactive session with the AI agent.
-    """
+def run() -> None:
     _print_welcome_banner()
-    
     try:
         agent = Agent()
 
-        file_completer = WordCompleter(get_file_paths(config.SRC_PATH), ignore_case=True)
-        session = PromptSession(completer=file_completer)
-        
+        file_completer = AtPathCompleter(get_file_paths(config.SRC_PATH))
+        session = PromptSession(
+            completer=file_completer,
+            key_bindings=kb,
+            complete_while_typing=True,
+        )
+
         while True:
-            console.print("[bold cyan]Describe your task, or type 'quit' to exit. Use '@' for file autocompletion.[/bold cyan]")
-            
+            console.print(
+                "[bold cyan]Describe your task, or type 'quit' to exit. "
+                "Use '@' for file autocompletion.[/bold cyan]"
+            )
             full_task = session.prompt("> ")
 
-            if not full_task:
+            if not full_task.strip():
                 continue
-
-            if full_task.strip().lower() == 'quit':
+            if full_task.strip().lower() == "quit":
                 console.print("[bold magenta]Goodbye! 🌸[/bold magenta]")
                 break
-                
-            mentioned_files = re.findall(r'@([\S]+)', full_task)
-            
-            agent.start(full_task, user_files=mentioned_files)
-            console.print("\n" + "="*80 + "\n")
 
-    except Exception as e:
-        console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")
+            mentioned_files = re.findall(r"@([\S]+)", full_task)
+            agent.start(full_task, user_files=mentioned_files)
+            console.print("\n" + "=" * 80 + "\n")
+
+    except Exception as exc:
+        console.print(f"[bold red]Unexpected error: {exc}[/bold red]")
         console.print_exception()
 
 
