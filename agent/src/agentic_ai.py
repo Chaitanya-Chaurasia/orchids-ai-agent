@@ -367,7 +367,6 @@ class Agent:
                 except Exception as e:
                     self.console.print(f"[red]Error reading file {file_path}: {e}[/red]")
         
-                # ===== NEW SUPER‑DETAILED PROMPT =====
         prompt = f"""
         You are **Orchid**, an elite Next.js + TypeScript + Drizzle-ORM engineer.  
         Your job is to transform the user's request into a precise, AUTOMATED **build plan** for our CLI agent.

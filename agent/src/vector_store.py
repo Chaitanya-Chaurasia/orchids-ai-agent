@@ -1,75 +1,109 @@
+from __future__ import annotations
+
 import uuid
+from typing import List, Dict
+
 import google.generativeai as genai
-from rich.console import Console
 from qdrant_client import QdrantClient, models
-from rich.progress import track
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+
 from src import config
 
-class VectorStore:
-    """Manages code embeddings for semantic search using Qdrant."""
 
-    def __init__(self, collection_name: str):
+class VectorStore:
+    def __init__(self, collection_name: str) -> None:
         self.console = Console()
         self.collection_name = collection_name
-        self.client = QdrantClient(path=config.QDRANT_PATH)
-        self.console.print(f"[green]✅ Qdrant client initialized. Storage path: {config.QDRANT_PATH}[/green]")
+        with self.console.status(
+            f"[bold cyan]Connecting to vector database (for gathering context on codebase) ({config.QDRANT_PATH})…[/bold cyan]",
+            spinner="dots",
+        ):
+            self.client = QdrantClient(path=config.QDRANT_PATH)
+        self.console.print(f"[green]Your vector store (Qdrant) & indices are ready to view at {config.QDRANT_PATH}[/green]")
 
     def collection_exists(self) -> bool:
-        """Checks if the collection for the current project state exists."""
         try:
-            self.client.get_collection(collection_name=self.collection_name)
+            self.client.get_collection(self.collection_name)
             return True
-        except Exception:
+        except Exception:  
             return False
 
-    def build_collection(self, chunks: list[dict]):
-        """Creates embeddings and builds a new Qdrant collection."""
+    def build_collection(self, chunks: List[Dict]) -> None:
         if not chunks:
+            self.console.print("[yellow]No chunks provided; skipping indexing.[/yellow]")
             return
-        self.console.print("[bold yellow]Creating code embeddings and building Qdrant collection...[/bold yellow]")
-        try:
-            code_list = [chunk['code'] for chunk in chunks]
-            result = genai.embed_content(model=config.EMBEDDING_MODEL, content=code_list, task_type="RETRIEVAL_DOCUMENT")
-            embeddings = result['embedding']
-            
-            self.client.recreate_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(size=len(embeddings[0]), distance=models.Distance.COSINE)
-            )
 
-            points = []
-            for embedding, chunk in track(zip(embeddings, chunks), description="[green]Preparing points for database...[/green]", total=len(chunks)):
-                points.append(
-                    models.PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector=embedding,
-                        payload=chunk
-                    )
+        self.console.rule("[bold blue]Indexing codebase")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=None),
+            TimeElapsedColumn(),
+            console=self.console,
+        ) as progress:
+            t_embed = progress.add_task("Embedding snippets", total=len(chunks))
+            embeddings = genai.embed_content(
+                model=config.EMBEDDING_MODEL,
+                content=[c["code"] for c in chunks],
+                task_type="RETRIEVAL_DOCUMENT",
+            )["embedding"]
+            progress.update(t_embed, completed=len(chunks))
+
+        dim = len(embeddings[0])
+        self.console.print(
+            f"[cyan]Creating collection “{self.collection_name}” "
+            f"({dim}-dim vectors)[/cyan]"
+        )
+        self.client.recreate_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+        )
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=None),
+            TimeElapsedColumn(),
+            console=self.console,
+        ) as progress:
+            t_upsert = progress.add_task("Storing embeddings", total=len(chunks))
+            points = [
+                models.PointStruct(
+                    id=str(uuid.uuid4()), vector=emb, payload=chunk
                 )
-
+                for emb, chunk in zip(embeddings, chunks, strict=True)
+            ]
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=points,
-                wait=True
+                wait=True,
             )
-            self.console.print(f"[green]✅ Qdrant collection '{self.collection_name}' built with {len(chunks)} points.[/green]")
+            progress.update(t_upsert, completed=len(chunks))
 
-        except Exception as e:
-            self.console.print(f"[bold red]Error building Qdrant collection: {e}[/bold red]")
-            self.console.print_exception()
+        self.console.print(
+            f"[green]Indexed {len(chunks)} snippets "
+            f"into “{self.collection_name}”.[/green]"
+        )
 
-    def search(self, query: str, k: int = 15) -> list[dict]:
-        """Searches the Qdrant collection for the most relevant code chunks."""
+    def search(self, query: str, k: int = 15) -> List[Dict]:
         try:
-            query_embedding = genai.embed_content(model=config.EMBEDDING_MODEL, content=query, task_type="RETRIEVAL_QUERY")['embedding']
-            
-            self.console.print("[bold yellow]Searching for relevant code chunks...[/bold yellow]")
-            search_result = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=k
+            query_vec = genai.embed_content(
+                model=config.EMBEDDING_MODEL,
+                content=query,
+                task_type="RETRIEVAL_QUERY",
+            )["embedding"]
+
+            self.console.print(
+                f"[bold blue]Searching “{self.collection_name}”…[/bold blue]"
             )
-            return [hit.payload for hit in search_result]
-        except Exception as e:
-            self.console.print(f"[bold red]Error searching Qdrant collection: {e}[/bold red]")
+            res = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vec,
+                limit=k,
+            )
+            return [hit.payload for hit in res]
+        except Exception as exc: 
+            self.console.print(f"[red]Search error: {exc}[/red]")
             return []

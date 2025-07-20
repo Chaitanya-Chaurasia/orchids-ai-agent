@@ -76,7 +76,7 @@ def _print_welcome_banner():
     ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝
     """
     console.print(f"[bold deep_pink3]{banner_text}[/bold deep_pink3]", overflow="ignore")
-    console.print("[bold green]🎉 Ready to assist you.[/bold green]\n")
+    console.print("[bold green] Ready to assist you with any sophisticated database operations AND/OR general queries.[/bold green]\n")
 
 
 
