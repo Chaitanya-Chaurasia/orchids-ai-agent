@@ -1,59 +1,115 @@
 import sys
 import os
 import typer
+import re
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from rich.console import Console
 from rich.panel import Panel
-from src.agentic_ai import Agent
 from pyfiglet import Figlet
+from src.agentic_ai import Agent
+from src import config
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit import PromptSession
+from rich.text import Text
+
 
 app = typer.Typer(
     name="orchid",
-    help="Orchid AI Agent: Your AI pair programmer for database tasks.",
+    help="Orchid AI Agent: Your AI pair programmer for building features and answering questions.",
     add_completion=False,
 )
 console = Console()
 
+def get_file_paths(root_dir):
+    """Recursively gets all file paths from the src directory for autocompletion."""
+    file_paths = []
+    for root, _, files in os.walk(root_dir):
+        for name in files:
+            if "node_modules" not in root and ".next" not in root:
+                full_path = os.path.join(root, name)
+                relative_path = os.path.relpath(full_path, config.PROJECT_ROOT)
+                file_paths.append(f"@{relative_path.replace(os.sep, '/')}")
+    return file_paths
 
 def _print_welcome_banner():
-    """Display a fancy multi-line welcome banner similar to Claude Code preview."""
+    """Display a fancy multi-line welcome banner."""
     console.print(Panel("[bold]Welcome to the [bright_magenta]Orchid AI Agent[/bright_magenta]![/bold]", border_style="magenta"))
-
     banner_text = Figlet(font="banner3").renderText("ORCHID AI")
-
     console.print(f"[bold deep_pink3]{banner_text}[/bold deep_pink3]", overflow="ignore")
-    console.print("[bold green]🎉 Ready. Press Enter to continue[/bold green]")
+    console.print("[bold green]🎉 Ready to assist you.[/bold green]\n")
+
+@app.callback()
+def main(ctx: typer.Context):
+
+    if ctx.invoked_subcommand is None:
+        _print_welcome_banner()
+        help_text = Text.from_markup(
+            """
+            [bold cyan]How to use Orchid AI:[/bold cyan]
+
+            [bold]1. Initialize the Agent (run this first!):[/bold]
+            [dim]This scans your project and prepares the AI.[/dim]
+            [yellow]$ python agent/orchid.py init[/yellow]
+
+            [bold]2. Run a Task or Ask a Question:[/bold]
+            [dim]Start an interactive session to build features or ask about your code.[/dim]
+            [yellow]$ python agent/orchid.py run[/yellow]
+            """
+        )
+        console.print(Panel(help_text, title="[bold green]Getting Started[/bold green]", border_style="green"))
+
+
+@app.command()
+def init():
+    """
+    Initializes the agent by scanning the codebase and building the vector store.
+    """
+    console.print(Panel("[bold magenta]🌸 Initializing Orchid AI Agent 🌸[/bold magenta]"))
+    console.print("This may take a moment as the agent analyzes your project...")
+    try:
+        agent = Agent(initialize=False)
+        agent.initialize_project()
+    except Exception as e:
+        console.print(f"[bold red]An unexpected error occurred during initialization: {e}[/bold red]")
+        console.print_exception()
 
 
 @app.command()
 def run():
-
+    """
+    Starts an interactive session with the AI agent.
+    """
     _print_welcome_banner()
     
-    console.print("[bold cyan]Describe your task. Submit an empty line when done:[/bold cyan]")
-    lines: list[str] = []
-    while True:
-        try:
-            line = input()
-        except EOFError:
-            break
-        if line.strip() == "":
-            break
-        lines.append(line)
-    full_task = "\n".join(lines).strip()
-
-    if not full_task:
-        console.print("[yellow]No task provided. Exiting.[/yellow]")
-        return
-
     try:
         agent = Agent()
-        agent.start(full_task)
+
+        file_completer = WordCompleter(get_file_paths(config.SRC_PATH), ignore_case=True)
+        session = PromptSession(completer=file_completer)
+        
+        while True:
+            console.print("[bold cyan]Describe your task, or type 'quit' to exit. Use '@' for file autocompletion.[/bold cyan]")
+            
+            full_task = session.prompt("> ")
+
+            if not full_task:
+                continue
+
+            if full_task.strip().lower() == 'quit':
+                console.print("[bold magenta]Goodbye! 🌸[/bold magenta]")
+                break
+                
+            mentioned_files = re.findall(r'@([\S]+)', full_task)
+            
+            agent.start(full_task, user_files=mentioned_files)
+            console.print("\n" + "="*80 + "\n")
+
     except Exception as e:
         console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")
         console.print_exception()
+
 
 if __name__ == "__main__":
     app()

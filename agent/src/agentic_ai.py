@@ -7,6 +7,7 @@ import inquirer
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.progress import track
 from rich.markdown import Markdown
 from rich.align import Align
@@ -14,15 +15,36 @@ import google.generativeai as genai
 import hashlib
 from src import config
 from src.vector_store import VectorStore
+from typing import List
+
 
 class Agent:
-    def __init__(self):
+    def __init__(self, initialize: bool = True):
         self.console = Console()
         self.vector_store: VectorStore | None = None
         if config.GEMINI_API_KEY == "YOUR_API_KEY_HERE":
             self.console.print(Panel("[bold red]Warning:[/bold red] GEMINI_API_KEY is not set. Please set it in your .env file.", title="Configuration Error", border_style="red"))
             exit()
         genai.configure(api_key=config.GEMINI_API_KEY)
+        
+        if initialize:
+            if not os.path.exists(config.QDRANT_PATH):
+                self.console.print(Panel("[bold red]Project not initialized![/bold red]\nPlease run `python agent/orchid.py init` first.", title="Initialization Error", border_style="red"))
+                exit()
+            self._load_context()
+    
+    def _load_context(self):
+        if self.vector_store:
+            return
+        all_files = []
+        for root, _, files in os.walk(config.SRC_PATH):
+            for name in files:
+                if "node_modules" not in root and ".next" not in root and name.endswith(('.ts', '.tsx', '.js', '.jsx')):
+                    all_files.append(os.path.join(root, name))
+        project_hash = self.get_project_hash(all_files)
+        self.vector_store = VectorStore(collection_name=project_hash)
+        if not self.vector_store.collection_exists():
+            self.console.print(Panel("[bold yellow]Codebase has changed.[/bold yellow] Re-initializing is recommended. Run `python agent/orchid.py init`.", title="Stale Cache Warning"))
 
     def think(self, message):
         self.console.print(Panel(f"[bold cyan]🤖 Agent thinking...[/bold cyan]\n[italic]{message}[/italic]"))
@@ -46,10 +68,8 @@ class Agent:
                 continue
         return hasher.hexdigest()
 
-    def _initialize_context(self):
-        """Scans files and initializes the vector store."""
-        if self.vector_store:
-            return
+    def initialize_project(self):
+        """Scans all files and builds the vector store from scratch."""
         self.think("First, I need to analyze the project and build a semantic understanding of the code.")
         all_files = []
         for root, _, files in os.walk(config.SRC_PATH):
@@ -60,20 +80,20 @@ class Agent:
         project_hash = self.get_project_hash(all_files)
         self.vector_store = VectorStore(collection_name=project_hash)
 
-        if not self.vector_store.collection_exists():
-            self.console.print("[yellow]Vector store for this project state not found. Building a new one...[/yellow]")
-            chunks = []
-            for file_path in track(all_files, description="[green]Analyzing project files...[/green]"):
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        for i in range(0, len(content), 1000):
-                            chunks.append({"path": file_path, "code": content[i:i+1000]})
-                except Exception as e:
-                    self.console.print(f"[yellow]Could not read file {file_path}: {e}[/yellow]")
-            self.vector_store.build_collection(chunks)
-        else:
-            self.console.print("[green]✅ Found existing vector store for this project state.[/green]")
+        self.console.print("[yellow]Building new vector store...[/yellow]")
+        chunks = []
+        for file_path in track(all_files, description="[green]Analyzing project files...[/green]"):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    for i in range(0, len(content), 1000):
+                        chunks.append({"path": file_path, "code": content[i:i+1000]})
+            except Exception as e:
+                self.console.print(f"[yellow]Could not read file {file_path}: {e}[/yellow]")
+        
+        self.vector_store.build_collection(chunks)
+        self.console.print(Panel("[bold green]✅ Project Initialized Successfully![/bold green]", title="Initialization Complete"))
+
 
     def _classify_intent(self, query: str) -> str:
         """Classifies the user's intent as a build request or a question."""
@@ -118,28 +138,70 @@ class Agent:
         except Exception as e:
             self.console.print(f"[bold red]Could not classify intent: {e}. Defaulting to build request.[/bold red]")
             return "build_request"
+    
+    def _classify_database_intent(self, task: str) -> str:
+        """Uses Gemini to classify the user's desired database from the initial prompt."""
+        self.think("Analyzing prompt for specific database request...")
+        prompt = f"""
+        Analyze the user's request and identify which database they want to use.
+        The possible databases are "SQLite", "MongoDB", or "Supabase".
 
-    def _execute_answer_task(self, query: str):
+        If the user mentions a database that is not one of these three (e.g., "Postgres", "MySQL"), or if it's ambiguous, respond with "Unsupported".
+        If the user clearly mentions one of the three, even with typos (e.g., "sqllite", "mongo db", "supa base"), respond with the corrected, single-word name: "SQLite", "MongoDB", or "Supabase".
+        If no database is mentioned, respond with "Unknown".
+
+        Respond with only a single word.
+
+        User Request: "{task}"
+        """
+        try:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            db_intent = response.text.strip()
+            if db_intent in ["SQLite", "MongoDB", "Supabase", "Unknown", "Unsupported"]:
+                self.console.print(f"[dim]Database intent classified as: {db_intent}[/dim]")
+                return db_intent
+            return "Unknown"
+        except Exception as e:
+            self.console.print(f"[bold red]Could not classify database intent: {e}. Defaulting to Unknown.[/bold red]")
+            return "Unknown"
+
+    def _execute_answer_task(self, query: str, user_files: List[str]):
         """Handles the workflow for answering a question."""
-        self._initialize_context()
-        self._generate_answer_with_gemini(query)
+        self._generate_answer_with_gemini(query, user_files)
 
-    def _execute_build_task(self, task: str):
-        """Handles the workflow for building a feature."""
-        self._initialize_context()
-        
+    def _execute_build_task(self, task: str, user_files: List[str]):
+        """Handles the workflow for building a feature."""        
+        db_type = self._classify_database_intent(task)
+
+        if db_type == "Unsupported":
+            self.console.print("[bold red]Sorry, the database you mentioned is not supported.[/bold red]")
+            db_type = "Unknown" 
+
         package_json_path = os.path.join(config.PROJECT_ROOT, "package.json")
-        db_type = "Unknown"
+        is_configured = False
         try:
             with open(package_json_path, "r") as f:
                 deps = json.load(f).get("dependencies", {})
-                if "mysql2" in deps or "pg" in deps or "better-sqlite3" in deps:
-                    db_type = "Pre-configured"
+                drizzle_installed = "drizzle-orm" in deps
+                driver_installed = "pg" in deps or "better-sqlite3" in deps
+                if drizzle_installed and driver_installed:
+                    is_configured = True
         except FileNotFoundError:
             self.console.print("[yellow]Warning: package.json not found.[/yellow]")
 
-        if db_type == "Unknown":
-            self.act("I see your project isn't connected to a database yet. Let's set one up!")
+        if is_configured:
+            self.act("Project analysis complete. It seems Drizzle and a database are already configured.")
+            if db_type == "Unknown": 
+                with open(package_json_path, "r") as f:
+                    deps = json.load(f).get("dependencies", {})
+                    if "pg" in deps:
+                        db_type = "Supabase"
+                    elif "better-sqlite3" in deps:
+                        db_type = "SQLite"
+        
+        elif not is_configured and db_type == "Unknown":
+            self.act("I see your project isn't fully configured. Let's set one up!")
             questions = [
                 inquirer.List('db_choice',
                               message="Which database would you like to use?",
@@ -150,16 +212,20 @@ class Agent:
             db_type = db_choice
             if db_choice in ["MongoDB", "Supabase"]:
                 self._setup_env_file(db_choice)
-        else:
-            self.act(f"Project analysis complete. It seems a database is already configured.")
         
-        plan = self._generate_plan_with_gemini(task, db_type)
+        elif not is_configured and db_type != "Unknown":
+            self.act(f"Okay, I'll set up your project to use {db_type}.")
+            if db_type in ["MongoDB", "Supabase"]:
+                self._setup_env_file(db_type)
+
+        plan = self._generate_plan_with_gemini(task, db_type, user_files)
         if plan:
             self._execute_plan(plan)
             if plan.get("plan"):
                  self.console.print(Panel("[bold green]✅ All tasks completed successfully![/bold green]"))
         else:
             self.console.print(Panel("[bold red]❌ Agent could not complete the task.[/bold red]"))
+
 
     def _setup_env_file(self, db_choice):
         """Guides the user through setting up their .env file."""
@@ -188,14 +254,30 @@ class Agent:
             except IOError as e:
                 self.console.print(f"[bold red]Error writing to .env file: {e}[/bold red]")
 
-    def _generate_plan_with_gemini(self, task, db_type):
+    def _generate_plan_with_gemini(self, task, db_type, user_files: List[str] = None):
         self.think(f"Searching for code relevant to '{task}'...")
         relevant_chunks = self.vector_store.search(task)
         context = "\n".join([f"--- START OF {chunk['path']} ---\n{chunk['code']}\n--- END OF {chunk['path']} ---" for chunk in relevant_chunks])
 
+        user_file_context = ""
+        if user_files:
+            self.think("Loading content from user-specified files...")
+            for file_path in user_files:
+                try:
+                    full_path = os.path.join(config.PROJECT_ROOT, file_path)
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    user_file_context += f"--- START OF {file_path} ---\n{content}\n--- END OF {file_path} ---\n\n"
+                except FileNotFoundError:
+                    self.console.print(f"[yellow]Warning: File not found: {file_path}[/yellow]")
+                except Exception as e:
+                    self.console.print(f"[red]Error reading file {file_path}: {e}[/red]")
+        
         prompt = f"""
         You are an expert Next.js and Drizzle ORM developer. Your task is to implement a new database feature.
         **User Request:** "{task}"
+        **User-Provided File Context (High Priority):**
+        {user_file_context or "None"}
         **Project Context:**
         - **Database Type:** {db_type}
         - **Relevant Code Snippets:**
@@ -256,7 +338,7 @@ class Agent:
         self.console.print(f"[bold red]Failed to get a response from Gemini after {max_retries} retries.[/bold red]")
         return None
 
-    def _generate_answer_with_gemini(self, query):
+    def _generate_answer_with_gemini(self, query, user_files: List[str] = None):
         self.think(f"Searching for code relevant to '{query}'...")
         relevant_chunks = self.vector_store.search(query)
         context = "\n".join(
@@ -264,28 +346,53 @@ class Agent:
             for c in relevant_chunks
         )
 
+        user_file_context = ""
+        if user_files:
+            self.think("Loading content from user-specified files...")
+            for file_path in user_files:
+                try:
+                    full_path = os.path.join(config.PROJECT_ROOT, file_path)
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    user_file_context += f"--- START OF {file_path} ---\n{content}\n--- END OF {file_path} ---\n\n"
+                except FileNotFoundError:
+                    self.console.print(f"[yellow]Warning: File not found: {file_path}[/yellow]")
+                except Exception as e:
+                    self.console.print(f"[red]Error reading file {file_path}: {e}[/red]")
+
+
         prompt = f"""
-        You are an expert full-stack developer acting as a code-analysis assistant.
+        You are an expert Next.js and Drizzle ORM developer. Your task is to implement a new database feature.
+        **User Request:** "{query}"
 
-        Your task has two parts, in this order:
+        **User-Provided File Context (High Priority):**
+        {user_file_context or "None"}
 
-        1. Tech Stack Summary  
-        • Detect the main framework(s), language(s), libraries, and build tools in the snippets.  
-        • Describe any notable patterns (file structure, data-fetching strategy, auth approach, etc.).
-
-        2. Project-Type Inference  
-        • From file / directory names, routes, UI components, API paths, env vars, and business logic, infer the project's probable domain and purpose (e.g., “Spotify-style music player”, “VC fund dashboard”, “e-commerce shop for sneakers”).  
-        • State your confidence (High / Medium / Low) and the key evidence that led you there.  
-        • If evidence is contradictory or inconclusive, list the plausible options with a brief rationale instead of forcing a single guess.
-
-        Respond in Markdown with clear headings, bold text, and bullet lists. Aim for 2-4 concise sentences per section.
-
-        **User Question:** "{query}"
-
-        **Relevant Code Snippets:**
+        **Relevant Code Snippets (from automatic search):**
         {context}
-
-        **Your Answer:**
+        **Your Goal:**
+        Generate a step-by-step plan. The plan should consist of `CREATE_FILE` or `UPDATE_FILE` actions. You must also identify any new npm packages that need to be installed.
+        **Output Format:**
+        Respond with ONLY a valid JSON object.
+        ```json
+        {{
+        "dependencies": ["package-name-if-needed"],
+        "plan": [
+            {{
+            "action": "CREATE_FILE",
+            "path": "path/to/new/file.ts",
+            "thought": "A brief explanation of why you are creating this file.",
+            "code": "FULL_CODE_FOR_THE_FILE"
+            }},
+            {{
+            "action": "UPDATE_FILE",
+            "path": "path/to/existing/file.tsx",
+            "thought": "A brief explanation of why you are updating this file.",
+            "code": "THE_ENTIRE_UPDATED_FILE_CONTENT"
+            }}
+        ]
+        }}
+        ```
         """
 
         headers = {"Content-Type": "application/json"}
@@ -296,12 +403,13 @@ class Agent:
                 config.GEMINI_API_URL, headers=headers, json=data, timeout=180
             )
             response.raise_for_status()
+            # thought = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
             answer = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
             md_renderable = Markdown(answer, justify="left", code_theme="monokai")
             panel = Panel(
                 Align.left(md_renderable),
-                title="[bold cyan]🤖 Orchid’s Answer[/bold cyan]",
+                title="[bold cyan]🤖 Orchid's Answer[/bold cyan]",
                 border_style="cyan",
                 padding=(1, 2),
                 expand=True,
@@ -321,6 +429,27 @@ class Agent:
 
         self.console.print(Panel("[bold yellow]Gemini has generated the following plan. Please review carefully.[/bold yellow]", title="Execution Plan"))
         
+        plan_steps = full_plan.get("plan", [])
+        
+        summary_table = Table(title="Execution Plan Summary")
+        summary_table.add_column("Step", style="dim")
+        summary_table.add_column("Action", style="cyan")
+        summary_table.add_column("File Path", style="magenta")
+        summary_table.add_column("Thought", style="green")
+
+        for i, step in enumerate(plan_steps):
+            summary_table.add_row(
+                str(i + 1),
+                step.get('action', 'N/A'),
+                step.get('path', 'N/A'),
+                step.get('thought', 'N/A')
+            )
+        
+        self.console.print(summary_table)
+        if not inquirer.prompt([inquirer.Confirm('proceed_summary', message="Do you want to proceed with reviewing this plan step-by-step?", default=True)])['proceed_summary']:
+            self.console.print("[bold yellow]Operation cancelled by user.[/bold yellow]")
+            return
+
         dependencies = full_plan.get("dependencies", [])
         if dependencies:
             self.act(f"Plan requires new dependencies: [bold yellow]{', '.join(dependencies)}[/bold yellow]")
@@ -341,7 +470,9 @@ class Agent:
             else:
                 self.console.print("[yellow]Skipping dependency installation.[/yellow]")
 
-        plan_steps = full_plan.get("plan", [])
+        staged_changes = {}
+        user_cancelled = False
+
         for i, step in enumerate(plan_steps):
             self.console.print(f"\n--- Step {i+1}/{len(plan_steps)} ---")
             self.think(step.get('thought', 'No thought provided.'))
@@ -349,24 +480,40 @@ class Agent:
             if not all([action, path, code]):
                 self.console.print(f"[red]Skipping invalid step.[/red]"); continue
             
-            absolute_path = os.path.join(config.PROJECT_ROOT, path)
-            
             self.act(f"Action: [bold magenta]{action}[/bold magenta] on file: [bold cyan]{path}[/bold cyan]")
             self.show_code(code)
             if inquirer.prompt([inquirer.Confirm('proceed', message="Apply this change?", default=True)])['proceed']:
+                staged_changes[path] = code
+            else:
+                user_cancelled = True
+                break
+        
+        if user_cancelled and staged_changes:
+            if inquirer.prompt([inquirer.Confirm('partial_commit', message=f"You cancelled the operation. Apply the {len(staged_changes)} changes you already approved?", default=False)])['partial_commit']:
+                 self.act("Applying previously approved changes...")
+            else:
+                self.console.print("[bold yellow]All changes have been discarded.[/bold yellow]")
+                return
+        elif user_cancelled:
+             self.console.print("[bold yellow]All changes have been discarded.[/bold yellow]")
+             return
+        
+        if staged_changes:
+            self.act("Committing all approved changes to the filesystem...")
+            for path, code in staged_changes.items():
                 try:
+                    absolute_path = os.path.join(config.PROJECT_ROOT, path)
                     if (dir_name := os.path.dirname(absolute_path)): os.makedirs(dir_name, exist_ok=True)
                     with open(absolute_path, "w", encoding="utf-8") as f: f.write(code)
                     self.console.print(f"[green]✅ Wrote changes to {path}[/green]")
                 except IOError as e:
-                    self.console.print(f"[bold red]Error writing to file: {e}[/bold red]")
-            else:
-                self.console.print("[yellow]Skipped step.[/yellow]")
+                    self.console.print(f"[bold red]Error writing file {path}: {e}[/bold red]")
+
     
-    def start(self, query: str):
+    def start(self, query: str, user_files: List[str] = None):
         """Main entry point that classifies intent and routes to the correct workflow."""
         intent = self._classify_intent(query)
         if intent == "question":
-            self._execute_answer_task(query)
+            self._execute_answer_task(query, user_files)
         else:
-            self._execute_build_task(query)
+            self._execute_build_task(query, user_files)
