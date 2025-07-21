@@ -18,12 +18,12 @@ OrchidAI is an intelligent coding assistant that helps you understand and work w
 2. Create and activate a Python virtual environment:
    ```bash
    # On Windows
-   python -m venv venv
-   .\venv\Scripts\activate
+   python -m venv orchid_venv
+   .\orchid_venv\Scripts\activate
    
-   # On macOS/Linux
-   python3 -m venv venv
-   source venv/bin/activate
+   # On macOS/Linux/Git Bash
+   python3 -m venv orchid_venv
+   source orchid_venv/bin/activate
    ```
 
 3. Install Python dependencies:
@@ -37,7 +37,7 @@ OrchidAI provides two main commands:
 
 ### 1. Initialize the Vector Store
 
-Before using OrchidAI, you need to initialize the vector store which will index your codebase:
+Before using OrchidAI, you need to initialize the vector store which will index your codebase (run these commands in the agent folder):
 
 ```bash
 python orchid.py init
@@ -66,21 +66,3 @@ This will start an interactive session where you can ask questions about your co
 2. **Code Understanding**: The system analyzes your codebase to understand its structure, dependencies, and functionality.
 
 3. **Context-Aware Assistance**: When you ask questions, OrchidAI uses the vector store to find relevant code snippets and provides accurate, context-aware responses.
-
-## Development
-
-To start the development server:
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser to see the application.
-
-## Deployment
-
-This is a Next.js application that can be deployed on Vercel or any other platform that supports Next.js applications.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
