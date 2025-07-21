@@ -107,7 +107,6 @@ class Agent:
 
         project_hash = self._project_hash(all_files)
         self.vector_store = VectorStore(collection_name=project_hash)
-        self.console.print("\n[bold yellow]Stale context detected. Re-building vector store...[/bold yellow]\n")
 
         chunks = []
         for file_path in track(all_files, description="[green] ➜  Analyzing project files...[/green]"):
@@ -429,8 +428,7 @@ class Agent:
                     user_file_context += f"--- START OF {file_path} ---\n{content}\n--- END OF {file_path} ---\n\n"
                 except FileNotFoundError:
                     self.console.print(f"[yellow]Warning: File not found: {file_path}[/yellow]")
-                except Exception as e:
-                    self.console.print(f"[red]Error reading file {file_path}: {e}[/red]")
+                 
         
         prompt = f"""
         You are **Orchid**, an elite Next.js + TypeScript + Drizzle-ORM engineer.  
