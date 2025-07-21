@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import re
 import requests
 import subprocess
 import inquirer
@@ -390,6 +391,27 @@ class Agent:
                 pass
 
         return None
+    
+    def _extract_json(self, text: str):
+        JSON_FENCE = re.compile(r"```json\s*({.*?})\s*```", re.DOTALL)
+
+        text = text.strip()
+
+        match = JSON_FENCE.search(text)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        brace = text.find("{")
+        if brace != -1:
+            try:
+                return json.loads(text[brace:])
+            except json.JSONDecodeError:
+                pass
+
+        return None
 
     def _generate_plan_with_gemini(self, task, db_type, user_files: List[str] = None):
         self.think(f"Searching for code relevant to '{task}'...")
@@ -504,15 +526,21 @@ class Agent:
                     response = requests.post(config.GEMINI_API_URL, headers=headers, json=data, timeout=180)
                     response.raise_for_status()
                 
-                content = response.json()['candidates'][0]['content']['parts'][0]['text']
-                print(content)
-                if content.startswith("```json"):
-                    content = content[7:-3].strip()
-                plan = json.loads(content)
-                if not plan:
-                    self.console.print("[red]Couldn't parse a valid JSON plan from Gemini.[/red]")
-                    return None
-                return plan
+                gemini_text = (
+                    response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                )
+
+                plan = self._extract_json(gemini_text)
+                if plan is None:
+                    self.console.print(
+                        "[red]Response did not contain valid JSON; retrying…[/red]"
+                    )
+                    continue   
+
+                return plan   
+
+            except (requests.RequestException, KeyError) as err:
+                self.console.print(f"[red]HTTP or parsing error: {err} – retrying…[/red]")
 
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 429:
