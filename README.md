@@ -1,36 +1,86 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OrchidAI - AI Coding Assistant
+
+OrchidAI is an intelligent coding assistant that helps you understand and work with your codebase more effectively. It uses vector embeddings to provide context-aware assistance.
+
+## Prerequisites
+
+- Python 3.8+
+- Node.js 16+
+- npm or yarn
+
+## Setup
+
+1. First, install the required dependencies:
+   ```bash
+   npm install --legacy-peer-deps
+   ```
+
+2. Create and activate a Python virtual environment:
+   ```bash
+   # On Windows
+   python -m venv venv
+   .\venv\Scripts\activate
+   
+   # On macOS/Linux
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Getting Started
 
-First, run the development server:
+OrchidAI provides two main commands:
+
+### 1. Initialize the Vector Store
+
+Before using OrchidAI, you need to initialize the vector store which will index your codebase:
+
+```bash
+python orchid.py init
+```
+
+This command:
+- Scans your codebase
+- Creates vector embeddings of your code
+- Stores them in a local Qdrant vector database
+- Only needs to be run when you want to re-index your codebase
+
+### 2. Run the AI Agent
+
+To start interacting with OrchidAI:
+
+```bash
+python orchid.py run
+```
+
+This will start an interactive session where you can ask questions about your codebase and get AI-powered assistance.
+
+## How It Works
+
+1. **Vector Database**: OrchidAI uses Qdrant to store vector embeddings of your code, allowing for efficient semantic search and retrieval.
+
+2. **Code Understanding**: The system analyzes your codebase to understand its structure, dependencies, and functionality.
+
+3. **Context-Aware Assistance**: When you ask questions, OrchidAI uses the vector store to find relevant code snippets and provides accurate, context-aware responses.
+
+## Development
+
+To start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser to see the application.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deployment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+This is a Next.js application that can be deployed on Vercel or any other platform that supports Next.js applications.
 
-## Learn More
+## License
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This project is licensed under the MIT License - see the LICENSE file for details.
