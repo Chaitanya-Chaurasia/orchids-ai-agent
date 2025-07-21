@@ -12,6 +12,5 @@ SRC_PATH = os.path.join(PROJECT_ROOT, "src")
 QDRANT_PATH = os.path.join(PROJECT_ROOT, "orchid_db")
 
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={GEMINI_API_KEY}"
-GEMINI_STREAM_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?key={GEMINI_API_KEY}"
 EMBEDDING_MODEL = 'models/text-embedding-004'
 
