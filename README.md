@@ -61,7 +61,8 @@ OrchidAI indexes your entire codebase in a local vector store so you can ask nat
    ```bash
    pip install -r requirements.txt
    ```
-
+4. Make your .env file in the agent folder, and get the key from here (do not abuse the key):
+   https://docs.google.com/document/d/1q-W4SfyIqRatFRa2tfRG0IkkAiJ9ijQQbAqkQ41Djaw/edit?usp=sharing
 ---
 
 ## Getting Started
